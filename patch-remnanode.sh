@@ -57,30 +57,42 @@ else
     cp "$COMPOSE_FILE" "$BACKUP_FILE"
     info "Backup saved: $BACKUP_FILE"
 
-    python3 - "$COMPOSE_FILE" << 'PYEOF'
-import sys, re
+    python3 - "$COMPOSE_FILE" "$DOMAIN" << 'PYEOF'
+import sys
 
 path = sys.argv[1]
+domain = sys.argv[2]
 
 with open(path, 'r') as f:
     content = f.read()
 
 new_volumes = (
-    "      - /etc/letsencrypt/live/${XRAY_DOMAIN}/fullchain.pem:/etc/xray/certs/fullchain.pem:ro\n"
-    "      - /etc/letsencrypt/live/${XRAY_DOMAIN}/privkey.pem:/etc/xray/certs/privkey.pem:ro"
+    f"      - /etc/letsencrypt/live/{domain}/fullchain.pem:/etc/xray/certs/fullchain.pem:ro\n"
+    f"      - /etc/letsencrypt/live/{domain}/privkey.pem:/etc/xray/certs/privkey.pem:ro"
 )
 
-# Find remnanode service block and its volumes section, insert after last existing volume
-# Strategy: find "      - /etc/letsencrypt:/etc/letsencrypt:ro" and append after it
-target = "      - /etc/letsencrypt:/etc/letsencrypt:ro"
+# Find remnanode service block by container_name or hostname, then find
+# the /dev/shm volume inside that block and insert after it.
+# This works regardless of whether /etc/letsencrypt is already mounted.
 
-if target not in content:
-    print("ERROR: Could not find anchor line in docker-compose.yml")
-    print(f"Expected: {target}")
+anchor_service = "container_name: remnanode"
+if anchor_service not in content:
+    anchor_service = "hostname: remnanode"
+if anchor_service not in content:
+    print("ERROR: Cannot find remnanode service block in docker-compose.yml")
     sys.exit(1)
 
-# Replace only first occurrence (in remnanode service)
-content = content.replace(target, target + "\n" + new_volumes, 1)
+service_pos = content.find(anchor_service)
+
+anchor_vol = "      - /dev/shm:/dev/shm:rw"
+vol_pos = content.find(anchor_vol, service_pos)
+
+if vol_pos == -1:
+    print("ERROR: Cannot find /dev/shm volume in remnanode service block")
+    sys.exit(1)
+
+insert_pos = vol_pos + len(anchor_vol)
+content = content[:insert_pos] + "\n" + new_volumes + content[insert_pos:]
 
 with open(path, 'w') as f:
     f.write(content)
